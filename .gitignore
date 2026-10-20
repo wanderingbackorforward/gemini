@@ -1,4 +1,14 @@
-node_modules
-.netlify
-.vercel
-.wrangler
+# 构建产物
+build/
+*.o
+*.a
+
+# 运行输出（回测报告，不入库）
+output/
+
+# 运行时/编辑器
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+compile_commands.json
