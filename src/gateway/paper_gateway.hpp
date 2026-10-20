@@ -26,6 +26,7 @@ class PaperGateway : public IGateway {
 
   void place(Order& o, Price ref_price) override;
   void cancel(uint64_t order_id) override;
+  Qty pending_qty(const std::string& symbol, Side side) const override;
 
   void on_session_open(TradingDay day) override;
   void on_bar(const Bar& bar) override;

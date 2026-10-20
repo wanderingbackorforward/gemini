@@ -7,6 +7,7 @@
 #include <format>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 
 #include "core/log.hpp"
 #include "engine/order_agent.hpp"
@@ -46,6 +47,12 @@ bool Engine::init() {
       {Market::US, "gateway.us", "market.us.enable"},
   };
 
+  // ---- 实盘安全配置（装配网关前读取）----
+  const bool live_confirmed = cfg_.flag("live.i_confirm_real_money", false);
+  const bool live_shadow_cfg = cfg_.flag("live.shadow", true);
+  live_max_order_value_cny_ = cfg_.num("live.max_order_value_cny", 5000.0);
+  live_daily_loss_limit_cny_ = cfg_.num("live.daily_loss_limit_cny", 0.0);
+
   for (const auto& mc : market_cfgs) {
     if (!cfg_.flag(mc.enable_key, true)) {
       QD_INFO("市场 {} 未启用，跳过", to_string(mc.m));
@@ -57,29 +64,34 @@ bool Engine::init() {
       gw->set_slippage_bps(cfg_.num("paper.slippage_bps", 5.0));
       gateways_[mc.m] = std::move(gw);
       QD_INFO("市场 {} -> 纸面网关(模拟撮合)", to_string(mc.m));
-    } else if (g == "qmt") {
-      auto gw = std::make_unique<QmtGateway>(bus_, cfg_.str("gateway.qmt.bridge", "python3 scripts/live/qmt_bridge.py"));
-      if (!gw->connect()) {
-        QD_ERROR("QMT 网关连接失败：请先启动 QMT 客户端并装配桥进程（见 README）");
-        return false;
+    } else if (g == "qmt" || g == "futu") {
+      // ---- 实盘网关（TCP 桥）----
+      live_mode_ = true;
+      // 双保险：未显式确认真实资金 → 强制影子模式
+      bool shadow = live_shadow_cfg || !live_confirmed;
+      if (!live_confirmed) {
+        QD_WARN("================================================");
+        QD_WARN("live.i_confirm_real_money 未确认为 true，");
+        QD_WARN("实盘网关已自动降级为【影子模式】（拦截所有委托）。");
+        QD_WARN("确认要动真钱时，把该配置改为 true 并重启。");
+        QD_WARN("================================================");
       }
-      gateways_[mc.m] = std::move(gw);
-    } else if (g == "futu") {
-      auto gw = std::make_unique<FutuGateway>(bus_, cfg_.str("gateway.futu.bridge", "python3 scripts/live/futu_bridge.py"));
-      if (!gw->connect()) {
-        QD_ERROR("Futu 网关连接失败：请先启动 OpenD 并装配桥进程（见 README）");
-        return false;
+      const std::string host = cfg_.str("gateway." + g + ".host", "127.0.0.1");
+      const int port = static_cast<int>(
+          cfg_.integer("gateway." + g + ".port", g == "qmt" ? 17001 : 17002));
+      std::unique_ptr<LiveGatewayBase> gw;
+      if (g == "qmt") {
+        gw = std::make_unique<QmtGateway>(bus_, pf_, host, port, shadow);
+      } else {
+        gw = std::make_unique<FutuGateway>(bus_, pf_, host, port, shadow);
       }
-      gateways_[mc.m] = std::move(gw);
-    } else if (g == "longport") {
-      auto gw = std::make_unique<LongportGateway>(bus_, "longport");
       if (!gw->connect()) {
-        QD_ERROR("LongPort 网关未装配：需引入官方 C SDK 后编译（见 README）");
+        QD_ERROR("{} 连接失败：请先启动桥进程（见 README 实盘部署）", gw->name());
         return false;
       }
       gateways_[mc.m] = std::move(gw);
     } else {
-      QD_ERROR("未知网关类型: {} (支持 paper/qmt/futu/longport)", g);
+      QD_ERROR("未知网关类型: {} (支持 paper/qmt/futu)", g);
       return false;
     }
   }
@@ -88,16 +100,29 @@ bool Engine::init() {
     return false;
   }
 
-  // ---- 2) 资金（分币种独立记账，折CNY 合并计算权益）----
-  const double capital = cfg_.num("account.capital_cny", 1'000'000.0);
-  pf_.init_capital(Currency::CNY, capital);
-  if (double hkd = cfg_.num("account.capital_hkd", 0.0); hkd > 0) {
-    pf_.init_capital(Currency::HKD, hkd);
+  // ---- 2) 资金 ----
+  if (live_mode_) {
+    // 实盘：等待桥的对账回报（现金/持仓），以券商为事实源
+    poll_live(1000);   // 最多等 1 秒让 query_asset 回报到位
+    initial_equity_cny_ = pf_.total_equity_cny();
+    QD_WARN("实盘模式：初始权益取自券商对账 = {:.2f} CNY"
+            "（配置文件中的 account.capital_* 已忽略）", initial_equity_cny_);
+    if (initial_equity_cny_ <= 0) {
+      QD_ERROR("券商对账权益为 0：请检查账户资金或桥对账日志");
+      return false;
+    }
+  } else {
+    // 纸面：分币种注入模拟资金
+    const double capital = cfg_.num("account.capital_cny", 1'000'000.0);
+    pf_.init_capital(Currency::CNY, capital);
+    if (double hkd = cfg_.num("account.capital_hkd", 0.0); hkd > 0) {
+      pf_.init_capital(Currency::HKD, hkd);
+    }
+    if (double usd = cfg_.num("account.capital_usd", 0.0); usd > 0) {
+      pf_.init_capital(Currency::USD, usd);
+    }
+    initial_equity_cny_ = pf_.total_equity_cny();
   }
-  if (double usd = cfg_.num("account.capital_usd", 0.0); usd > 0) {
-    pf_.init_capital(Currency::USD, usd);
-  }
-  initial_equity_cny_ = pf_.total_equity_cny();
 
   // ---- 3) 风控 ----
   RiskParams rp;
@@ -164,10 +189,9 @@ bool Engine::init() {
     for (auto& s : strategies_) s->on_session_close(agent, e.day);
   });
 
-  QD_INFO("引擎装配完成: 初始权益 {:.0f} CNY (CNY {:.0f} / HKD {:.0f} / USD {:.0f}), 标的 {} 个, 模拟 {} 个交易日",
-          initial_equity_cny_, capital, cfg_.num("account.capital_hkd", 0.0),
-          cfg_.num("account.capital_usd", 0.0), universe.size(),
-          cfg_.integer("sim.days", 60));
+  QD_INFO("引擎装配完成: 初始权益 {:.0f} CNY, 标的 {} 个, 模拟 {} 个交易日{}",
+          initial_equity_cny_, universe.size(), cfg_.integer("sim.days", 60),
+          live_mode_ ? std::format(", 实盘单笔上限 {:.0f} CNY", live_max_order_value_cny_) : "");
   return true;
 }
 
@@ -175,6 +199,13 @@ double Engine::cash_for(const std::string& symbol) const {
   auto m = MarketRules::market_of(symbol);
   if (!m) return 0.0;
   return pf_.cash(MarketRules::of(*m).ccy);
+}
+
+Qty Engine::pending_qty(const std::string& symbol, Side side) const {
+  auto m = MarketRules::market_of(symbol);
+  if (!m) return 0;
+  auto it = gateways_.find(*m);
+  return it != gateways_.end() ? it->second->pending_qty(symbol, side) : 0;
 }
 
 double Engine::cny_to(const std::string& symbol, double cny_amount) const {
@@ -208,15 +239,64 @@ uint64_t Engine::submit_order(const OrderRequest& req) {
   }
 
   Price ref = feed_.last_close().count(req.symbol) ? feed_.last_close().at(req.symbol) : 0.0;
-  if (auto reason = risk_.check(o, ref, pf_, orders_today_)) {
+  if (auto reason = risk_.check(o, ref, pf_, orders_today_,
+                                pending_qty(req.symbol, o.side))) {
     o.status = OrderStatus::Rejected;
     o.note = *reason;
     bus_.orders().publish(OrderEvent{o});
     return o.id;
   }
+
+  // ---- 实盘保险丝（纸面模式不触发）----
+  if (live_mode_) {
+    double px = o.type == OrderType::Limit ? o.limit_price : ref;
+    double order_value_cny =
+        pf_.convert(px * static_cast<double>(o.qty), MarketRules::of(*m).ccy, Currency::CNY);
+    if (order_value_cny > live_max_order_value_cny_) {
+      o.status = OrderStatus::Rejected;
+      o.note = std::format("实盘保险丝: 单笔 {:.0f} CNY 超硬上限 {:.0f} CNY",
+                           order_value_cny, live_max_order_value_cny_);
+      bus_.orders().publish(OrderEvent{o});
+      QD_ERROR("{}", o.note);
+      return o.id;
+    }
+    if (live_daily_loss_limit_cny_ > 0 && day_start_equity_cny_ > 0) {
+      double drawdown = day_start_equity_cny_ - pf_.total_equity_cny();
+      if (drawdown >= live_daily_loss_limit_cny_) {
+        o.status = OrderStatus::Rejected;
+        o.note = std::format("当日亏损熔断: 回撤 {:.0f} CNY 已达限额 {:.0f} CNY",
+                             drawdown, live_daily_loss_limit_cny_);
+        bus_.orders().publish(OrderEvent{o});
+        QD_ERROR("{}", o.note);
+        return o.id;
+      }
+    }
+  }
+
   ++orders_today_;
   gateways_.at(*m)->place(o, ref);
   return o.id;
+}
+
+void Engine::poll_live(int settle_ms) {
+  if (!live_mode_) return;
+  // 所有 live 网关统一 poll（可能多个市场）
+  auto do_poll = [&] {
+    for (auto& [m, gw] : gateways_) {
+      if (auto* lgw = dynamic_cast<LiveGatewayBase*>(gw.get())) lgw->poll();
+    }
+  };
+  if (settle_ms <= 0) {
+    do_poll();
+    return;
+  }
+  // 等待对账类消息到位（简单节拍轮询，低频场景足够）
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(settle_ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    do_poll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  do_poll();
 }
 
 int Engine::run() {
@@ -228,6 +308,7 @@ int Engine::run() {
 
     for (auto& [m, gw] : gateways_) gw->on_session_open(cur_day_);
     bus_.opens().publish(SessionOpenEvent{cur_day_});
+    day_start_equity_cny_ = pf_.total_equity_cny();   // 熔断基准
 
     // 先撮合昨日挂单（按今日 bar 的开盘/高低），再向策略推送行情
     for (const auto& bar : *bars) {
@@ -235,6 +316,9 @@ int Engine::run() {
       pf_.mark(bar.symbol, bar.close);
       bus_.bars().publish(BarEvent{bar});
     }
+
+    // 消费实盘桥回报（ack/成交/对账）
+    poll_live(live_mode_ ? 300 : 0);
 
     for (auto& [m, gw] : gateways_) gw->on_session_close(cur_day_);
     pf_.settle();   // T+1 解冻

@@ -1,6 +1,7 @@
 #include "portfolio/portfolio.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <numeric>
 
 #include "market/market_rules.hpp"
@@ -136,6 +137,23 @@ double Portfolio::convert(double amount, Currency from, Currency to) const {
   return to == Currency::CNY ? cny
          : to == Currency::HKD ? cny / hkd_cny_
                                : cny / usd_cny_;
+}
+
+void Portfolio::bootstrap_cash(Currency c, double amount) {
+  cash_[c] = amount;
+}
+
+void Portfolio::bootstrap_position(const Position& p) {
+  if (p.total_qty <= 0) {
+    positions_.erase(p.symbol);
+    lots_.erase(p.symbol);
+    return;
+  }
+  positions_[p.symbol] = p;
+  // 对账持仓无 FIFO 明细：以单一"均价批次"重建（真实成本以券商为准）
+  auto today = std::chrono::year_month_day{
+      std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now())};
+  lots_[p.symbol] = {{p.total_qty, p.avg_price, today}};
 }
 
 double Portfolio::unrealized_pnl_cny() const {

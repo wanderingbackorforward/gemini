@@ -29,8 +29,10 @@ class RiskManager {
   }
 
   // 校验订单；通过返回 nullopt，否则返回拒绝原因。
+  // pending_sell：该标的同方向在途订单量（回报延迟窗口内已占用的可卖量）
   std::optional<std::string> check(const Order& o, Price last_close,
-                                   const Portfolio& pf, int orders_today) const;
+                                   const Portfolio& pf, int orders_today,
+                                   Qty pending_sell = 0) const;
 
  private:
   double to_cny2(double amount, Currency c) const;

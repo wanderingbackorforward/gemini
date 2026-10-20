@@ -36,4 +36,8 @@ double OrderAgent::cny_to(const std::string& symbol, double cny_amount) const {
   return engine_.cny_to(symbol, cny_amount);
 }
 
+Qty OrderAgent::pending_qty(const std::string& symbol, Side side) const {
+  return engine_.pending_qty(symbol, side);
+}
+
 }  // namespace quantd

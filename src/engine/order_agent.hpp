@@ -29,6 +29,8 @@ class OrderAgent {
   int lot_of(const std::string& symbol) const;     // 每手股数
   double cash_for(const std::string& symbol) const;  // 该标的币种可用现金
   double cny_to(const std::string& symbol, double cny_amount) const;  // CNY→标的币种
+  // 该标的该方向在途订单量（回报延迟窗口内已占用，避免重复委托）
+  Qty pending_qty(const std::string& symbol, Side side) const;
 
  private:
   Engine& engine_;

@@ -1,0 +1,2 @@
+usage: mock_bridge.py [-h] [--port PORT] [--reject-rate REJECT_RATE]
+mock_bridge.py: error: unrecognized arguments: --cash 200000

@@ -23,6 +23,13 @@ class IGateway {
   // 撤单
   virtual void cancel(uint64_t order_id) = 0;
 
+  // 在途占用：该标的该方向"已提交未终结"的订单总量。
+  // 券商回报存在延迟（受理/成交回传需数百毫秒到数秒），
+  // 策略与风控据此扣减可下单量，防止回报窗口内重复委托。
+  virtual Qty pending_qty(const std::string& symbol, Side side) const {
+    (void)symbol; (void)side; return 0;
+  }
+
   // ---- 回调（由引擎在事件循环中驱动）----
 
   // 交易日开盘：撮合昨日收盘后挂出的市价/限价单

@@ -38,6 +38,8 @@ void DualMAStrategy::on_bar(OrderAgent& agent, const Bar& bar) {
   const int lot = agent.lot_of(bar.symbol);
 
   if (golden && !pos) {
+    // 在途买单未落地时不重复买（券商回报延迟窗口）
+    if (agent.pending_qty(bar.symbol, Side::Buy) > 0) return;
     // 目标金额 = min(权益×仓位比, 该币种账户可用现金×0.98)
     // （多币种账户分账管理，避免跨市场抢资金）
     double budget_ccy = std::min(
@@ -50,11 +52,13 @@ void DualMAStrategy::on_bar(OrderAgent& agent, const Bar& bar) {
     auto id = agent.market_order(bar.symbol, Side::Buy, qty);
     QD_INFO("[{}] 金叉信号: BUY {} x{} @~{:.2f} (单#{})", name(), bar.symbol, qty, px, id);
   } else if (dead && pos) {
-    // 卖出全部可卖（T+1 当日买入部分次日再卖）
-    Qty qty = pos->available_qty > 0 ? pos->available_qty : 0;
-    if (qty > 0) {
-      auto id = agent.market_order(bar.symbol, Side::Sell, qty);
-      QD_INFO("[{}] 死叉信号: SELL {} x{} (单#{})", name(), bar.symbol, qty, id);
+    // 卖出全部可卖（T+1 当日买入部分次日再卖；
+    // 在途卖单占用量一并扣除，防止回报延迟窗口内重复卖出）
+    Qty pend = agent.pending_qty(bar.symbol, Side::Sell);
+    Qty avail = pos->available_qty > pend ? pos->available_qty - pend : 0;
+    if (avail > 0) {
+      auto id = agent.market_order(bar.symbol, Side::Sell, avail);
+      QD_INFO("[{}] 死叉信号: SELL {} x{} (单#{})", name(), bar.symbol, avail, id);
     }
   }
 }

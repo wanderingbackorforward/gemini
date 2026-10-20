@@ -224,6 +224,10 @@ static void test_paper_gateway() {
   l.qty = 100;
   l.limit_price = 90.0;  // 远低于日内 low
   gw.place(l, 102.0);
+  check(gw.pending_qty("600519.SH", Side::Buy) == 100,
+        "挂单期间在途占用=100");
+  check(gw.pending_qty("600519.SH", Side::Sell) == 0,
+        "反方向在途=0");
   Bar d3{};
   d3.symbol = "600519.SH";
   d3.market = Market::CN;
@@ -231,10 +235,61 @@ static void test_paper_gateway() {
   d3.open = 102.0; d3.high = 105.0; d3.low = 100.0; d3.close = 104.0;
   gw.on_session_open(d3.day);
   gw.on_bar(d3);
+  check(gw.pending_qty("600519.SH", Side::Buy) == 100,
+        "未成交期间占用保持");
   gw.on_session_close(d3.day);
+  check(gw.pending_qty("600519.SH", Side::Buy) == 0,
+        "日终撤单后占用归零");
   check(last_order_update.id == 2 &&
             last_order_update.status == OrderStatus::Cancelled,
         "未触及限价单日终自动撤单(GFD)");
+}
+
+// 在途占用风控：回报延迟窗口内不可重复卖出
+static void test_pending_occupancy_risk() {
+  std::printf("[pending_occupancy]\n");
+  EventBus bus;
+  Portfolio pf;
+  pf.set_fx(0.92, 7.1);
+  pf.init_capital(Currency::CNY, 100'000.0);
+  PaperGateway gw(bus, pf);
+  RiskManager rm;
+  RiskParams rp;
+  rp.max_order_value_cny = 300'000;
+  rp.max_position_value_cny = 500'000;
+  rp.max_total_exposure = 0.8;
+  rp.max_price_deviation = 0.15;
+  rp.max_orders_per_day = 20;
+  rm.init(rp);
+  rm.set_fx(0.92, 7.1);
+
+  // 注入持仓 600519.SH x100，可卖 100
+  Position p{};
+  p.symbol = "600519.SH";
+  p.market = Market::CN;
+  p.ccy = Currency::CNY;
+  p.total_qty = 100;
+  p.available_qty = 100;
+  p.avg_price = 100.0;
+  pf.bootstrap_position(p);
+
+  // 第一笔卖出委托挂单中（占用 100 股）
+  Order o1{};
+  o1.id = 1;
+  o1.symbol = "600519.SH";
+  o1.market = Market::CN;
+  o1.side = Side::Sell;
+  o1.type = OrderType::Market;
+  o1.qty = 100;
+  gw.place(o1, 100.0);
+  check(gw.pending_qty("600519.SH", Side::Sell) == 100, "卖出在途=100");
+
+  // 回报未到、持仓视角未变时，第二笔同标的卖出应被风控拦截
+  Order o2 = o1;
+  o2.id = 2;
+  o2.qty = 100;
+  auto reason = rm.check(o2, 100.0, pf, 1, gw.pending_qty("600519.SH", Side::Sell));
+  check(reason.has_value(), "在途占用期间重复卖出被风控拦截");
 }
 
 int main() {
@@ -244,6 +299,7 @@ int main() {
   test_portfolio();
   test_risk();
   test_paper_gateway();
+  test_pending_occupancy_risk();
   std::printf("===== 结果: %d/%d 通过 =====\n", g_total - g_failed, g_total);
   return g_failed == 0 ? 0 : 1;
 }

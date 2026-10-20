@@ -14,12 +14,14 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # ---------------- 主库 ----------------
 add_library(quantd STATIC
   src/core/config.cpp
+  src/core/protocol.cpp
   src/market/market_rules.cpp
   src/market/calendar.cpp
   src/data/sim_feed.cpp
   src/portfolio/portfolio.cpp
   src/risk/risk_manager.cpp
   src/gateway/paper_gateway.cpp
+  src/gateway/live_gateways.cpp
   src/strategy/dual_ma.cpp
   src/engine/engine.cpp
   src/engine/order_agent.cpp

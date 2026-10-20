@@ -41,12 +41,18 @@ class Engine {
   int lot_of(const std::string& symbol) const { return MarketRules::lot_of(symbol); }
   // 该标的结算币种的可用现金（多币种账户约束）
   double cash_for(const std::string& symbol) const;
+  // 该标的该方向在途订单量（已提交未终结，跨网关汇总）
+  Qty pending_qty(const std::string& symbol, Side side) const;
   // CNY 金额折算为该标的结算币种
   double cny_to(const std::string& symbol, double cny_amount) const;
 
  private:
+  friend class OrderAgent;
+
   void record_equity();
   void write_reports();
+  // 消费 live 网关消息；settle_ms>0 时等待对账类消息到位
+  void poll_live(int settle_ms = 0);
 
   Config cfg_;
   EventBus bus_;
@@ -61,6 +67,12 @@ class Engine {
   uint64_t next_order_id_ = 1;
   int orders_today_ = 0;
   double initial_equity_cny_ = 0.0;
+
+  // ---- 实盘模式状态 ----
+  bool live_mode_ = false;                 // 任一网关为 live 即置位
+  double live_max_order_value_cny_ = 5000; // 单笔硬保险丝（折CNY）
+  double live_daily_loss_limit_cny_ = 0;   // 当日亏损熔断（0=关闭）
+  double day_start_equity_cny_ = 0;        // 当日开盘权益（熔断基准）
 
   // 报告数据
   struct EquityPoint {

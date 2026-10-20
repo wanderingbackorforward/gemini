@@ -18,7 +18,8 @@ double RiskManager::to_cny2(double amount, Currency c) const {
 
 std::optional<std::string> RiskManager::check(const Order& o, Price last_close,
                                               const Portfolio& pf,
-                                              int orders_today) const {
+                                              int orders_today,
+                                              Qty pending_sell) const {
   if (o.qty <= 0) return "委托数量必须为正";
   if (o.type == OrderType::Limit && o.limit_price <= 0) return "限价单价格非法";
   if (orders_today >= p_.max_orders_per_day) {
@@ -37,11 +38,11 @@ std::optional<std::string> RiskManager::check(const Order& o, Price last_close,
     return std::format("港股须为{}股整手", lot);
   }
 
-  // 卖出可卖数量检查（T+1 / 空头防线）
+  // 卖出可卖数量检查（T+1 / 空头防线 / 在途占用）
   if (o.side == Side::Sell) {
     const Position* pos = pf.position(o.symbol);
-    if (!pos || pos->available_qty < o.qty) {
-      return "可卖数量不足（T+1 当日买入或无持仓）";
+    if (!pos || pos->available_qty - pending_sell < o.qty) {
+      return "可卖数量不足（T+1 当日买入、无持仓或在途订单占用）";
     }
   }
 

@@ -56,6 +56,10 @@ class Portfolio {
   // 跨币种金额换算（按配置汇率）
   double convert(double amount, Currency from, Currency to) const;
 
+  // ---- 实盘对账：以券商回报为事实源重建账户 ----
+  void bootstrap_cash(Currency c, double amount);   // 覆盖现金
+  void bootstrap_position(const Position& p);       // 覆盖/新增持仓
+
  private:
   struct Lot {  // FIFO 买入批次
     Qty qty{};

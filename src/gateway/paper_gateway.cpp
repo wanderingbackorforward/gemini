@@ -23,6 +23,17 @@ void PaperGateway::place(Order& o, Price /*ref_price*/) {
   bus_.orders().publish(OrderEvent{o});
 }
 
+Qty PaperGateway::pending_qty(const std::string& symbol, Side side) const {
+  Qty n = 0;
+  for (const auto& o : pending_) {
+    if (o.status == OrderStatus::Accepted && o.symbol == symbol &&
+        o.side == side) {
+      n += o.qty;
+    }
+  }
+  return n;
+}
+
 void PaperGateway::cancel(uint64_t order_id) {
   for (auto& o : pending_) {
     if (o.id == order_id && o.status == OrderStatus::Accepted) {
